@@ -1,0 +1,78 @@
+name: "Terraform"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+# 環境変数(アカウントID)
+env:
+  OIDC_ARN: arn:aws:iam::847208500766:role/GitHubActionsOIDC
+
+# 権限
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      # tfcmt
+      - name: Setup tfcmt
+        env:
+          TFCMT_VERSION: v4.0.0
+        run: |
+          wget "https://github.com/suzuki-shunsuke/tfcmt/releases/download/${TFCMT_VERSION}/tfcmt_linux_amd64.tar.gz" -O /tmp/tfcmt.tar.gz
+          tar xzf /tmp/tfcmt.tar.gz -C /tmp
+          mv /tmp/tfcmt /usr/local/bin
+          tfcmt --version
+
+      # OIDC による AWS認証
+      - name: Assume Role
+        uses: aws-actions/configure-aws-credentials@v1-node16
+        with:
+          role-to-assume: ${{ env.OIDC_ARN }}
+          aws-region: ap-northeast-1
+
+      #  HCLファイルがフォーマットされているかをチェック
+      - name: Terraform Format
+        id: fmt
+        run: terraform fmt -check
+
+      # ワークスペースの初期化
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      # 全てのHCLファイルに対して構文チェック
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      #* terraform plan コマンド
+      - name: Terraform Plan
+        id: plan
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tfcmt plan -patch -- terraform plan -no-color -input=false
+
+      # terraform plan 失敗時にワークフローを抜ける
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+      #* terraform apply コマンド
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tfcmt apply -- terraform apply -auto-approve -input=false
